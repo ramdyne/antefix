@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <link rel="stylesheet" href="https://openlayers.org/en/v4.0.1/css/ol.css" type="text/css">
+        <script src="https://code.jquery.com/jquery-3.1.1.js"   integrity="sha256-16cdPddA6VdVInumRGo6IbivbERE8p7CQR3HzTBuELA="   crossorigin="anonymous"></script>
+        <style>
+            .map {
+                height: 100%;
+                width: 100%;
+            }
+        </style>
+        <script src="https://openlayers.org/en/v4.0.1/build/ol.js" type="text/javascript"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.js" type="text/javascript"></script>
+        <title>Antefix ADS-B map</title>
+        <style>
+            .ol-popup {
+                position: absolute;
+                background-color: white;
+                -webkit-filter: drop-shadow(0 1px 4px rgba(0,0,0,0.2));
+                filter: drop-shadow(0 1px 4px rgba(0,0,0,0.2));
+                padding: 15px;
+                border-radius: 10px;
+                border: 1px solid #cccccc;
+                bottom: 12px;
+                left: -50px;
+                min-width: 280px;
+            }
+
+            .ol-popup:after, .ol-popup:before {
+                top: 100%;
+                border: solid transparent;
+                content: " ";
+                height: 0;
+                width: 0;
+                position: absolute;
+                pointer-events: none;
+            }
+        
+            .ol-popup:after {
+                border-top-color: white;
+                border-width: 10px;
+                left: 48px;
+                margin-left: -10px;
+            }
+
+            .ol-popup:before {
+                border-top-color: #cccccc;
+                border-width: 11px;
+                left: 48px;
+                margin-left: -11px;
+            }
+            
+            .ol-popup-closer {
+                text-decoration: none;
+                position: absolute;
+                top: 2px;
+                right: 8px;
+            }
+            
+            .ol-popup-closer:after {
+                content: "X"
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Antefix ADS-B Map</h1>
+        
+        <div id="map" class="map"></div>
+        
+        <div id="popup" class="ol-popup">
+            <a href="#" id="popup-closer" class="ol-popup-closer"></a>
+            <div id="popup-content"></div>
+        </div>
+        
+        <script type="text/javascript">
+            var container = document.getElementById('popup');
+            var content = document.getElementById('popup-content');
+            var closer = document.getElementById('popup-closer');
+            
+            var overlay = new ol.Overlay( ({
+                element: container,
+                autoPan: true,
+                autoPanAnimation: {
+                    duration: 250
+                }
+            }));
+            
+            closer.onclick = function() {
+                overlay.setPosition(undefined);
+                closer.blur();
+                return false;
+            };
+            
+            var map = new ol.Map({
+                target: 'map',
+                overlays: [overlay],
+                layers: [
+                    new ol.layer.Tile({
+                        source: new ol.source.OSM()\
+                    })],
+                view: new ol.View({
+                    center: ol.proj.fromLonLat([5.363390, 52.237930]),
+                    zoom: 8
+                })
+            });
+            
+            map.on('click', onClick);
+
+            function onClick( evt ) {
+                // Retrieve the pixel where the click happened
+                var pixel = evt.pixel;
+                
+                // Retrieve all the features at the current pixel
+                var features = [];
+                map.forEachFeatureAtPixel(pixel, function(feature, layer) {
+                    features.push(feature);
+	        });
+
+	        // And only check out the top feature
+	        var target = features[0];
+
+	        if (target) {
+		    // Get the "unique" ID for the plane that flew over the pixel
+		    var plane_id = target.get('name');
+
+		    console.log("Clicked on a pixel and found a plane with ID " + plane_id);
+
+		    var current_plane = airplanes[plane_id];
+
+		    var data = "";
+
+		    if (current_plane.operator) data = data + current_plane.operator + " ";
+
+		    if (current_plane.registration) data = data + current_plane.registration + " ";
+
+		    if (current_plane.type) data = data + "<br/>" + current_plane.type + " ";
+
+		    if (current_plane.callsign) data = data + current_plane.callsign + " ";
+
+		    console.log("Data = " + data);
+
+		    content.innerHTML = "<p>" + data + "</p>";
+		    overlay.setPosition(evt.coordinate);
+	        }
+            }
+
+            var airplanes = {};
+
+            // Create a client instance
+            // Todo: Needs to create a "unique" client ID for each MQTT client, instead of 
+            // "Antefix Map client". If not,m there can only be one client listening
+            client = new Paho.MQTT.Client("localhost", Number("1884"), "Antefix Map client");
+
+            // set callback handlers
+            client.onConnectionLost = onConnectionLost;
+            client.onMessageArrived = onMessageArrived;
+
+            // connect the client
+            client.connect({onSuccess:onConnect});
+
+
+            // called when the client connects
+            function onConnect() {
+                // Once a connection has been made, make a subscription and send a message.
+                console.log("onConnect");
+                client.subscribe("/adsb/antefix/json");
+            }
+
+            // called when the client loses its connection
+            function onConnectionLost(responseObject) {
+	        if (responseObject.errorCode !== 0) {
+		    console.log("onConnectionLost:"+responseObject.errorMessage);
+		    client.connect({onSuccess:onConnect});
+	        }
+            }
+
+            function addPlane(plane) {
+                // Add the plane to the global list of planes
+                airplanes[plane.icao24] = plane;
+            }
+            
+            function updatePlane(plane) {
+	        // Update our data for the plane (accept non-null values only)
+	        var oldplane = airplanes[plane.icao24];
+
+	        var changed = false;
+
+	        if (plane.operator) {
+		    oldplane.operator = plane.operator;
+		    changed = true;
+	        }
+
+	        if (plane.callsign) {
+		    oldplane.callsign = plane.callsign;
+		    changed = true;
+	        }
+
+	        if (plane.type) {
+		    oldplane.type = plane.type;
+		    changed = true;
+	        }
+
+	        if (plane.operator) {
+		    oldplane.registration = plane.registration;
+		    changed = true;
+	        }
+
+	        if (changed) {
+		    airplanes[plane.icao24] = oldplane;
+	        }
+                
+                // If a vector is available at the old plane, use that to get the linestring and add the new coordinates to it
+                if (oldplane.vector) {
+	            // Add the current lat/lon to the existing linestring
+		    var linestring = oldplane.vector.getSource().getFeatures()[0].getGeometry();
+		    new_data = [plane.lon, plane.lat];
+		    new_coordinates = ol.proj.fromLonLat(new_data);
+		    linestring.appendCoordinate(new_coordinates);
+	        }
+	        else {
+		    // oldplane doesn't yet have a linestring, this is the second time this plane is seen, 
+		    // so create the linestring
+		    console.log("Found an existing plane, but it doesn't yet have a vector, so create it now");
+		    old_data = [oldplane.lon, oldplane.lat];
+		    old_coordinates = ol.proj.fromLonLat(old_data);
+		    new_data = [plane.lon, plane.lat];
+		    new_coordinates = ol.proj.fromLonLat(new_data);
+		    var coordinates = [old_coordinates, new_coordinates];
+
+		    var layerLines = new ol.layer.Vector({
+			source: new ol.source.Vector({
+			    features: [new ol.Feature({
+			        geometry: new ol.geom.LineString(coordinates),
+				name: plane.icao24
+			    })]
+			}),
+  		    });
+
+		    // Add the linestring to the map
+		    map.addLayer(layerLines);
+
+		    console.log("Added line to map");
+
+		    // Add the linestring to our plane
+		    oldplane.vector = layerLines;
+		    airplanes[plane.icao24] = oldplane;
+	        }
+            }
+
+            // called when a message arrives
+            function onMessageArrived(message) {
+	        var plane = JSON.parse(message.payloadString);
+	        var captureDate = Date.parse(plane.loggedDate);
+	        plane.capuredDate = captureDate;
+
+	        // Only update plane when latitude (and by extension also longitude) has been received
+	        if (plane.lat) {
+		    if (plane.icao24 in airplanes) {
+			console.log("Received existing plane " + plane.icao24);
+			updatePlane(plane);
+		    }
+		    else {
+			console.log("Received new plane! " + plane.icao24);
+			addPlane(plane);
+		    }
+	        }
+            }
+        </script>
+    </body>
+</html>
